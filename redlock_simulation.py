@@ -1,3 +1,4 @@
+from http import client
 import redis
 import time
 import uuid
@@ -12,8 +13,7 @@ logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s - [%(levelname)s] - %(message)s (%(filename)s:%(lineno)d)",
     handlers=[
-        logging.FileHandler(LOG_FILE),
-        logging.StreamHandler()
+        logging.FileHandler(LOG_FILE)
     ]
 )
 
@@ -37,10 +37,10 @@ class Redlock:
             script_sha = node.script_load(release_script_str)
             self.redis_nodes.append((node, script_sha))
         self.logger: logging.Logger = logging.getLogger()
-        self.retry_times: int = 5
+        self.retry_times: int = 3
         self.quorum: int = len(self.redis_nodes) // 2 + 1
         
-    def acquire_lock(self, resource: str, ttl: int) -> Tuple[bool, str]:
+    def acquire_lock(self, resource: str, ttl: int, client_id: int) -> Tuple[bool, str]:
         """
         Try to acquire a distributed lock.
         :param resource: The name of the resource to lock.
@@ -53,23 +53,26 @@ class Redlock:
 
         for node_tuple in self.redis_nodes:
             for i in range(self.retry_times):
-                if node_tuple[0].set(resource, lock_id, nx=True, px=ttl):
-                    acquired += 1
-                    self.logger.info(f'{lock_id} was acquired {acquired} times')
-                    break
-                else:
-                    self.logger.warning(f'Failed to acquire {lock_id}')
+                try:
+                    if node_tuple[0].set(resource, lock_id, nx=True, px=ttl):
+                        acquired += 1
+                        self.logger.info(f'{lock_id} was acquired on node {client_id}')
+                        break
+                    else:
+                        self.logger.warning(f'Failed to acquire {lock_id} on node {client_id}')
+                except Exception as e:
+                    self.logger.error(f'Error acquiring lock on node {client_id}: {e}')
+
         elapsed_time: float = (time.time() * 1000) - start_time
         lock_validity: float = ttl - elapsed_time
 
         if acquired >= self.quorum and lock_validity > 0:
             return True, lock_id
 
-        self.release_lock(resource, lock_id)
+        self.release_lock(resource, lock_id, client_id)
         return False, None
 
-
-    def release_lock(self, resource: str, lock_id: str) -> None:
+    def release_lock(self, resource: str, lock_id: str, client_id: int) -> None:
         """
         Release the distributed lock.
         :param resource: The name of the resource to unlock.
@@ -77,11 +80,18 @@ class Redlock:
         """
         for node_tuple in self.redis_nodes:
             try:
-                node_tuple[0].evalsha(node_tuple[1], resource)
-                self.logger.info(f'{lock_id} was released')
+                result: int = node_tuple[0].evalsha(node_tuple[1], 1, resource, lock_id)
+                if result == 1:
+                    self.logger.info(f'{lock_id} was released on node {client_id}')
             except Exception as e:
-                self.logger.warning(f'{lock_id} wasn\'t released successfully')
-
+                self.logger.error(f'Error releasing lock on node {client_id}: {e}')
+                try:
+                    ## Running the script again
+                    result: int = node_tuple[0].evalsha(node_tuple[1], 1, resource, lock_id)
+                    if result == 1:
+                        self.logger.info(f'{lock_id} was released on node {client_id} after running it again')
+                except Exception as e:
+                    self.logger.error(f'Failed to release lock on node {client_id}: {e}')
 
 def client_process(redis_nodes, resource: str, ttl: int, client_id: int):
     """
@@ -91,13 +101,13 @@ def client_process(redis_nodes, resource: str, ttl: int, client_id: int):
 
     redlock = Redlock(redis_nodes)
     print(f"\nClient-{client_id}: Attempting to acquire lock...")
-    lock_acquired, lock_id = redlock.acquire_lock(resource, ttl)
+    lock_acquired, lock_id = redlock.acquire_lock(resource, ttl, client_id)
 
     if lock_acquired:
         print(f"\nClient-{client_id}: Lock acquired! Lock ID: {lock_id}")
         # Simulate critical section
         time.sleep(3)  # Simulate some work
-        redlock.release_lock(resource, lock_id)
+        redlock.release_lock(resource, lock_id, client_id)
         print(f"\nClient-{client_id}: Lock released!")
     else:
         print(f"\nClient-{client_id}: Failed to acquire lock.")
@@ -111,7 +121,8 @@ if __name__ == "__main__":
         ("localhost", 63794),
         ("localhost", 63795),
     ]
-
+    with open(LOG_FILE, 'w') as logger_file:
+        logger_file.write('')
     resource = "shared_resource"
     ttl = 5000  # Lock TTL in milliseconds (5 seconds)
 
