@@ -1,4 +1,4 @@
-# OS-Lab4
+# OS-Lab4: Red locks using Redis
 
 ## **Project Overview**
 This project involves implementing the **Redlock Algorithm** for distributed locks in a simulated distributed environment. The goal is to synchronize access to a shared resource (e.g., a counter) in a fault-tolerant and reliable way.
