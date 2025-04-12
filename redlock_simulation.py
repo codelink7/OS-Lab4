@@ -16,8 +16,10 @@ logging.basicConfig(
         logging.FileHandler(LOG_FILE)
     ]
 )
-# computer_id ALUNS_TEAM_1->1000
+# computer_id ALUNS_TEAM_1->1000 (Random value of the key)
 # 1 on success
+
+## The script that tries to release the resource in Redis
 release_script_str: str = """
         if redis.call("get", KEYS[1]) == ARGV[1] then
             return redis.call("del", KEYS[1]) 
@@ -49,9 +51,10 @@ class Redlock:
         Try to acquire a distributed lock.
         :param resource: The name of the resource to lock.
         :param ttl: Time-to-live for the lock in milliseconds.
+        :param ttl: ID of the client that tries to acquire the key.
         :return: Tuple (lock_acquired, lock_id).
         """
-        # lock_id: str = 'ALNUS_TEAM_' + str(random.randint(1, 1000))
+        # lock_id: str = 'ALNUS_TEAM_' + str(random.randint(1, 1000)) (This was a random value for the key)
         lock_id: str = str(uuid.uuid4())
         start_time: float = time.time() * 1000
         acquired: int = 0
@@ -83,6 +86,7 @@ class Redlock:
         Release the distributed lock.
         :param resource: The name of the resource to unlock.
         :param lock_id: The unique lock ID to verify ownership.
+        :param client_id: The ID of the client that holds the key.
         """
         for node_tuple in self.redis_nodes:
             try:
@@ -90,6 +94,7 @@ class Redlock:
                 # node_tuple[0] -> redisClient
                 # node_tuple[1] -> str (script) which was loaded in the __init__ function
                 result: int = node_tuple[0].evalsha(node_tuple[1], 1, resource, lock_id)
+
                 # result == 1 means it ran correctly (was released)
                 if result == 1:
                     self.logger.info(f'{resource} was released on node {client_id}')
@@ -108,6 +113,9 @@ class Redlock:
 def client_process(redis_nodes, resource: str, ttl: int, client_id: int):
     """
     Function to simulate a single client process trying to acquire and release a lock.
+    :param resource: The name of the resource to unlock.
+    :param ttl: Time-to-live for the lock in milliseconds.
+    :param client_id: The ID of the client that holds the key.
     """
     # [0, 1, 1, 1, 4]
     time.sleep(client_processes_waiting[client_id])
